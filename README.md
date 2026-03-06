@@ -1,11 +1,15 @@
 <h1 align="center">Zen Folder Tree Connectors</h1>
 <p align="center"><em>Draws tree connectors for folder tabs</em></p>
 
+###
+
 <div align="center">
     <a href="https://zen-browser.app/">
         <img width="160" alt="zen-badge-dark" src="https://github.com/user-attachments/assets/d6ab3ddf-6630-4062-92d0-22497d2a3f9a" />
     </a>
 </div>
+
+###
 
 <div align="center">
   <img src="https://github.com/user-attachments/assets/6d4cafbf-e2db-43ea-8054-6b2342c94433" alt="ZenFolderTreeConnectors">
