@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zen Folder Tree Connectors
 // @description  Draws tree connectors for Zen Browser folders
-// @version      1.0.0
+// @version      1.1
 // @author       JustAdumbPrsn
 // @grant        none
 // ==/UserScript==
@@ -20,10 +20,10 @@
   class nsFolderTreeConnectors {
     #CONFIG = {
       lineX: 6,
-      strokeWidth: 1.8,
-      branchRadius: 8,
+      strokeWidth: 2,
+      branchRadius: 7,
       opacity: 0.25,
-      branchOvershoot: 2,
+      branchOvershoot: 0,
     };
 
     #INJECTED_STYLES = `
@@ -31,7 +31,8 @@
         margin-inline-start: 12px !important;
       }
 
-      :root[zen-sidebar-expanded="true"] zen-folder > .tab-group-container {
+      :root[zen-sidebar-expanded="true"] zen-folder > .tab-group-container,
+      .zen-related-group-container {
         position: relative;
       }
 
@@ -44,6 +45,21 @@
         pointer-events: none;
         z-index: 0;
       }
+
+      /* Indicator for a parent tab that has visually nested children */
+      tab.zen-is-related-parent {
+        /* Ensure the absolute connector extending below it is not clipped */
+        overflow: visible !important;
+      }
+      tab.zen-is-related-parent > .tab-stack {
+        /* Make sure the tab-stack itself can be styled without overflowing */
+        z-index: 1;
+        position: relative;
+      }
+      tab.zen-is-related-child > .tab-stack {
+        margin-inline-start: 20px !important;
+        width: calc(100% - 20px) !important;
+      }
     `;
 
     #raf = null;
@@ -53,8 +69,13 @@
      * Initializes the tree connectors.
      */
     init() {
-      this.#injectStyles();
-      this.#initEventListeners();
+      try {
+        this.#injectStyles();
+        this.#initEventListeners();
+        this.#updateVisualRelationships();
+      } catch (e) {
+        console.error("ZenFolderTreeConnectors init error:", e);
+      }
       this.scheduleUpdate();
     }
 
@@ -132,6 +153,196 @@
     }
 
     /**
+     * Identifies tabs that are opened from other tabs and tags them.
+     */
+    #updateVisualRelationships() {
+      if (!window.gBrowser || !window.gBrowser.tabs) return;
+
+      let prefEnabled = false;
+      try {
+        prefEnabled = window.Services?.prefs?.getBoolPref(
+          "zen.folders.owned-tabs-in-folder",
+          false,
+        );
+      } catch (e) {}
+
+      if (prefEnabled) {
+        // If folders handle this, we don't need visual nesting
+        document
+          .querySelectorAll(".zen-is-related-child, .zen-is-related-parent")
+          .forEach((el) => {
+            el.classList.remove(
+              "zen-is-related-child",
+              "zen-is-related-parent",
+            );
+            const conn = el.querySelector(":scope > .tree-connector");
+            if (conn && conn._isVisualConnector) conn.hidden = true;
+          });
+        return;
+      }
+
+      const tabs = Array.from(window.gBrowser.tabs);
+
+      let currentParent = null;
+      let validDescendants = new Set();
+
+      tabs.forEach((tab) => {
+        tab.classList.remove("zen-is-related-child", "zen-is-related-parent");
+
+        if (
+          tab.pinned ||
+          tab.group ||
+          tab.classList.contains("zen-tab-group-start")
+        ) {
+          currentParent = null;
+          validDescendants.clear();
+          return;
+        }
+
+        const owner = tab.ownerTab || tab.openerTab;
+
+        if (
+          owner &&
+          currentParent &&
+          (owner === currentParent || validDescendants.has(owner))
+        ) {
+          // Valid descendant in the current chain
+          tab.classList.add("zen-is-related-child");
+          validDescendants.add(tab);
+
+          if (!currentParent.classList.contains("zen-is-related-parent")) {
+            currentParent.classList.add("zen-is-related-parent");
+          }
+
+          this.#observeElement(tab);
+          this.#observeElement(currentParent);
+        } else {
+          // Start new chain
+          currentParent = tab;
+          validDescendants.clear();
+        }
+      });
+
+      // Hide connectors for tabs that are no longer parents
+      document.querySelectorAll("tab > .tree-connector").forEach((conn) => {
+        if (conn._isVisualConnector) {
+          const parentTab = conn.closest("tab");
+          if (
+            !parentTab ||
+            !parentTab.classList.contains("zen-is-related-parent")
+          ) {
+            conn.hidden = true;
+          }
+        }
+      });
+    }
+
+    #observeElement(el) {
+      if (!this.#resizeObserver) {
+        this.#resizeObserver = new ResizeObserver(() => this.scheduleUpdate());
+      }
+      if (!el._tcObserved) {
+        el._tcObserved = true;
+        this.#resizeObserver.observe(el);
+      }
+    }
+
+    /**
+     * Draws connectors for visually nested tabs (parent -> related children).
+     */
+    #drawVisualConnector(parentTab) {
+      const children = [];
+      let next = parentTab.nextElementSibling;
+      while (next && next.classList.contains("zen-is-related-child")) {
+        children.push(next);
+        next = next.nextElementSibling;
+      }
+
+      let conn = parentTab.querySelector(":scope > .tree-connector");
+      if (!children.length) {
+        if (conn && conn._isVisualConnector) conn.hidden = true;
+        return;
+      }
+
+      if (!conn) {
+        conn = document.createElement("div");
+        conn.className = "tree-connector";
+        conn._isVisualConnector = true;
+        parentTab.appendChild(conn);
+      }
+      conn.hidden = false;
+
+      const connectorRect = conn.getBoundingClientRect();
+      const { lineX, strokeWidth, branchRadius, opacity, branchOvershoot } =
+        this.#CONFIG;
+
+      const pts = children
+        .map((child) => {
+          const visualChild = child.querySelector(".tab-stack") || child;
+          const childRect = visualChild.getBoundingClientRect();
+          const style = window.getComputedStyle(visualChild);
+          let xOffset = 0;
+          let yOffset = 0;
+
+          if (style.transform && style.transform !== "none") {
+            try {
+              const matrix = new window.DOMMatrix(style.transform);
+              xOffset = matrix.m41;
+              yOffset = matrix.m42;
+            } catch (e) {}
+          }
+
+          let endX =
+            childRect.left - xOffset - connectorRect.left + branchOvershoot;
+          let y = childRect.top - yOffset - connectorRect.top;
+          y += visualChild.offsetHeight / 2;
+
+          return {
+            y,
+            endX,
+            r: Math.min(branchRadius, Math.max(0, endX - lineX)),
+          };
+        })
+        .filter((p) => p.y > 1);
+
+      if (!pts.length) {
+        conn.hidden = true;
+        return;
+      }
+
+      const lastPoint = pts[pts.length - 1];
+      const trunkEndPointY = lastPoint.y - lastPoint.r;
+      if (trunkEndPointY < 0) return;
+
+      const svg = this.#createElementNS("svg", {
+        width: "100%",
+        height: "100%",
+        style:
+          "position:absolute;top:0;left:0;overflow:visible;pointer-events:none;",
+      });
+
+      const g = this.#createElementNS("g", {
+        opacity,
+        stroke: "currentColor",
+        "stroke-width": strokeWidth,
+        fill: "none",
+        "stroke-linecap": "round",
+      });
+
+      // Adjust starting point to be below the parent tab's main content
+      const startY = parentTab.offsetHeight / 2;
+
+      let pathData = `M ${lineX} ${startY} L ${lineX} ${trunkEndPointY}`;
+      for (const { y, endX, r } of pts) {
+        pathData += ` M ${lineX} ${y - r} A ${r} ${r} 0 0 0 ${lineX + r} ${y} L ${endX} ${y}`;
+      }
+      g.appendChild(this.#createElementNS("path", { d: pathData }));
+
+      svg.appendChild(g);
+      conn.replaceChildren(svg);
+    }
+
+    /**
      * Draws the connector SVG for a single folder.
      */
     #drawConnector(folder) {
@@ -145,11 +356,18 @@
         return;
       }
 
+      const workspace = folder.closest("zen-workspace");
+      const isPinned = folder.closest(".zen-workspace-pinned-tabs-section");
+      const isWorkspacePinnedCollapsed =
+        isPinned && workspace?.hasAttribute("collapsedpinnedtabs");
+
       const isSidebarExpanded =
         document.documentElement.getAttribute("zen-sidebar-expanded") ===
         "true";
       const isFolderOpenOrActive =
-        !folder.hasAttribute("collapsed") || folder.hasAttribute("has-active");
+        (!folder.hasAttribute("collapsed") ||
+          folder.hasAttribute("has-active")) &&
+        !isWorkspacePinnedCollapsed;
 
       const kids =
         isSidebarExpanded && isFolderOpenOrActive
@@ -236,19 +454,11 @@
         "stroke-linecap": "round",
       });
 
-      g.appendChild(
-        this.#createElementNS("line", {
-          x1: lineX,
-          y1: 0,
-          x2: lineX,
-          y2: trunkEndPointY,
-        }),
-      );
-
+      let pathData = `M ${lineX} 0 L ${lineX} ${trunkEndPointY}`;
       for (const { y, endX, r } of pts) {
-        const d = `M ${lineX} ${y - r} A ${r} ${r} 0 0 0 ${lineX + r} ${y} L ${endX} ${y}`;
-        g.appendChild(this.#createElementNS("path", { d }));
+        pathData += ` M ${lineX} ${y - r} A ${r} ${r} 0 0 0 ${lineX + r} ${y} L ${endX} ${y}`;
       }
+      g.appendChild(this.#createElementNS("path", { d: pathData }));
 
       svg.appendChild(g);
       conn.replaceChildren(svg);
@@ -261,9 +471,17 @@
       if (this.#raf) return;
       this.#raf = requestAnimationFrame(() => {
         this.#raf = null;
-        document
-          .querySelectorAll("zen-folder")
-          .forEach((f) => this.#drawConnector(f));
+        try {
+          this.#updateVisualRelationships();
+          document
+            .querySelectorAll("zen-folder")
+            .forEach((f) => this.#drawConnector(f));
+          document
+            .querySelectorAll(".zen-is-related-parent")
+            .forEach((p) => this.#drawVisualConnector(p));
+        } catch (e) {
+          console.error("ZenFolderTreeConnectors error during update:", e);
+        }
       });
     }
 
@@ -297,6 +515,9 @@
         "FolderUngrouped",
         "TabSelect",
         "TabMove",
+        "TabOpen",
+        "TabClose",
+        "TabAttrModified",
       ];
       nativeEvents.forEach((evt) => window.addEventListener(evt, this));
       window.addEventListener("TabGroupCreate", this);
@@ -326,10 +547,10 @@
       this.scheduleUpdate();
     }
 
-    on_TabGroupExpand() {
+    on_TabGroupExpand(event) {
       this.scheduleUpdate();
     }
-    on_TabGroupCollapse() {
+    on_TabGroupCollapse(event) {
       this.scheduleUpdate();
     }
     on_TabGrouped() {
