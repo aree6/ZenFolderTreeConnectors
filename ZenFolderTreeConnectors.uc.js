@@ -235,10 +235,16 @@
           continue;
         }
 
+        const activeParentFolder = activeParent?.closest("zen-folder");
+        const tabFolder = tab.closest("zen-folder");
+        const isInSameFolder =
+          !!activeParentFolder && activeParentFolder === tabFolder;
+
         const owner = tab.ownerTab || tab.openerTab;
         const isDirectChild =
           owner &&
           activeParent &&
+          isInSameFolder &&
           (owner === activeParent || lineage.has(owner));
 
         if (isDirectChild) {
