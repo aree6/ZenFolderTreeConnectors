@@ -235,8 +235,10 @@
           continue;
         }
 
-        const activeParentFolder = activeParent?.closest("zen-folder");
-        const tabFolder = tab.closest("zen-folder");
+        const activeParentFolder = activeParent
+          ? this.#getRootFolder(activeParent)
+          : null;
+        const tabFolder = this.#getRootFolder(tab);
         const isInSameFolder =
           !!activeParentFolder && activeParentFolder === tabFolder;
 
@@ -285,6 +287,16 @@
           }
         }
       }
+    }
+
+    #getRootFolder(item) {
+      let rootFolder = null;
+      for (let node = item; node; node = node.parentElement) {
+        if (node.localName === "zen-folder") {
+          rootFolder = node;
+        }
+      }
+      return rootFolder;
     }
 
     #getVisibleChildren(container, isParentCollapsed = false) {
